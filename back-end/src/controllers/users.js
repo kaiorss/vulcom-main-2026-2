@@ -14,6 +14,7 @@ const controller = {}
 controller.create = async function(req, res) {
   try {
     const data = { ...req.body }
+
     if(data.password && !data.password.startsWith('$argon2')) {
       data.password = await argon2.hash(
         data.password,
@@ -35,7 +36,14 @@ controller.create = async function(req, res) {
 
 controller.retrieveAll = async function(req, res) {
   try {
-    const result = await prisma.user.findMany()
+    const result = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true
+      }
+    })
 
     res.send(result)
   }
@@ -48,7 +56,13 @@ controller.retrieveAll = async function(req, res) {
 controller.retrieveOne = async function(req, res) {
   try {
     const result = await prisma.user.findUnique({
-      where: { id: Number(req.params.id) }
+      where: { id: Number(req.params.id) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true
+      }
     })
 
     if(result) res.send(result)
@@ -110,28 +124,35 @@ controller.delete = async function(req, res) {
 
 controller.login = async function(req, res) {
   try {
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: req.body?.username },
-          { email: req.body?.email }
-        ]
-      }
+    const { username, password } = req.body || {}
+
+    if(!username || !password) {
+      return res.status(401).end()
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { username }
     })
 
     if(!user) return res.status(401).end()
 
     let passwordIsValid = false
+
     try {
       if(user.password.startsWith('$argon2')) {
         passwordIsValid = await argon2.verify(
           user.password,
-          req.body?.password
+          password
         )
       } else {
-        passwordIsValid = user.password === req.body?.password
+        passwordIsValid = user.password === password
+
         if(passwordIsValid) {
-          const newHash = await argon2.hash(req.body.password, argon2Options)
+          const newHash = await argon2.hash(
+            password,
+            argon2Options
+          )
+
           await prisma.user.update({
             where: { id: user.id },
             data: { password: newHash }
@@ -139,13 +160,16 @@ controller.login = async function(req, res) {
         }
       }
     } catch (e) {
-      passwordIsValid = user.password === req.body?.password
+      passwordIsValid = user.password === password
     }
 
     if(!passwordIsValid) return res.status(401).end()
 
+    const userWithoutPassword = { ...user }
+    delete userWithoutPassword.password
+
     const token = jwt.sign(
-      user,
+      userWithoutPassword,
       process.env.TOKEN_SECRET,
       { expiresIn: '24h' }
     )
@@ -155,10 +179,10 @@ controller.login = async function(req, res) {
       secure: true,
       sameSite: 'None',
       path: '/',
-      maxAge: 24 * 60 * 60 * 100
+      maxAge: 24 * 60 * 60 * 1000
     })
 
-    res.send({token, user})
+    res.send({ token, user: userWithoutPassword })
   }
   catch(error) {
     console.error(error)
@@ -167,7 +191,9 @@ controller.login = async function(req, res) {
 }
 
 controller.me = function(req, res) {
-  res.send(req?.authUser)
+  const { password, ...userWithoutPassword } = req.authUser || {}
+
+  res.send(userWithoutPassword)
 }
 
 export default controller
